@@ -40,7 +40,9 @@ uvicorn suspicious_activity_detector.api:app --host 0.0.0.0 --port 8000 --reload
 
 Key endpoints:
 - `GET /health` - basic readiness check.
-- `POST /assess` - submit an identity, activity event, and optional privilege change for scoring.
+- `POST /assess` - submit an identity, activity event, and optional privilege change for immediate scoring.
+- `POST /assess/async` - enqueue an assessment to be processed by a Celery worker.
+- `GET /tasks/{task_id}` - fetch an asynchronous assessment result (returns `pending` until completed).
 - `GET /accounts/{user_id}/summary` - retrieve the current account state and behavioral summary.
 - `POST /accounts/{user_id}/freeze` - mark an account as frozen.
 - `POST /accounts/{user_id}/reset-sessions` - clear active sessions.
@@ -135,6 +137,22 @@ Or start it with Docker Compose:
 
 ```
 docker-compose up --build
+```
+
+The Compose stack now includes Redis (for Celery) and MongoDB (for persistence). To run the asynchronous flow locally:
+
+```
+docker-compose up --build
+```
+
+Then enqueue and poll a task:
+
+```bash
+curl -X POST http://localhost:8000/assess/async \
+  -H "Content-Type: application/json" \
+  -d '{...}'
+
+curl http://localhost:8000/tasks/<task_id>
 ```
 
 ## Tests
