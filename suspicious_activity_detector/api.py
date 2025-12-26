@@ -4,13 +4,14 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from pydantic import BaseModel, Field
 
 from .models import ActivityEvent, IdentityContext, PrivilegeChange, RiskAssessment, RiskSignal
 from .persistence import AssessmentRepository
 from .risk_engine import RiskEngine
 from .tasks import enqueue_assessment
+from .webhook import build_assessment_payload, deliver_webhook, resolve_webhook_url
 
 
 class IdentityPayload(BaseModel):
@@ -138,6 +139,7 @@ def create_app(
     repository: AssessmentRepository | None = None,
     mongodb_uri: str | None = None,
     mongodb_database: str | None = None,
+    webhook_url: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Suspicious Activity Detector API", version="1.0.0")
     app.state.engine = engine or RiskEngine()
@@ -145,18 +147,32 @@ def create_app(
         uri=mongodb_uri or os.getenv("MONGODB_URI", "mongodb://mongo:27017/"),
         database=mongodb_database or os.getenv("MONGODB_DATABASE", "suspicious_activity"),
     )
+    app.state.webhook_url = webhook_url or resolve_webhook_url()
 
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
 
     @app.post("/assess", response_model=AssessmentResponse)
-    def assess(request: AssessRequest) -> AssessmentResponse:
+    def assess(request: AssessRequest, background_tasks: BackgroundTasks) -> AssessmentResponse:
         identity = _to_identity(request.identity)
         event = _to_activity(request.event)
         privilege_change = _to_privilege_change(request.privilege_change)
         assessment = app.state.engine.assess_event(identity, event, privilege_change)
-        return _serialize_assessment(assessment)
+        response = _serialize_assessment(assessment)
+
+        if app.state.webhook_url:
+            payload = build_assessment_payload(
+                assessment=response.model_dump(),
+                identity=request.identity.model_dump(mode="json"),
+                event=request.event.model_dump(mode="json"),
+                privilege_change=request.privilege_change.model_dump(mode="json") if request.privilege_change else None,
+                task_id=None,
+                source="sync",
+            )
+            background_tasks.add_task(deliver_webhook, app.state.webhook_url, payload)
+
+        return response
 
     @app.post("/assess/async", response_model=TaskEnqueueResponse, status_code=202)
     def queue_assessment(request: AssessRequest) -> TaskEnqueueResponse:
