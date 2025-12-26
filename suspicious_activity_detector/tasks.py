@@ -9,6 +9,7 @@ from celery import Celery
 from .models import ActivityEvent, IdentityContext, PrivilegeChange
 from .persistence import AssessmentRepository
 from .risk_engine import RiskEngine
+from .webhook import build_assessment_payload, deliver_webhook, resolve_webhook_url
 
 
 def _broker_url() -> str:
@@ -38,6 +39,7 @@ celery_app.conf.update(
 
 _ENGINE: Optional[RiskEngine] = None
 _REPOSITORY: Optional[AssessmentRepository] = None
+_WEBHOOK_URL: Optional[str] = None
 
 
 def _get_engine() -> RiskEngine:
@@ -52,6 +54,13 @@ def _get_repository() -> AssessmentRepository:
     if _REPOSITORY is None:
         _REPOSITORY = AssessmentRepository(uri=_mongodb_uri(), database=_mongodb_database())
     return _REPOSITORY
+
+
+def _get_webhook_url() -> Optional[str]:
+    global _WEBHOOK_URL
+    if _WEBHOOK_URL is None:
+        _WEBHOOK_URL = resolve_webhook_url()
+    return _WEBHOOK_URL
 
 
 def _to_identity(payload: Mapping[str, Any]) -> IdentityContext:
@@ -118,6 +127,17 @@ def process_assessment(
         _to_privilege_change(privilege_change),
     )
     repo.save_assessment(task_id, identity, event, assessment, privilege_change)
+    webhook_url = _get_webhook_url()
+    if webhook_url:
+        payload = build_assessment_payload(
+            assessment=repo.serialize_assessment(assessment),
+            identity=identity,
+            event=event,
+            privilege_change=privilege_change,
+            task_id=task_id,
+            source="async",
+        )
+        deliver_webhook(webhook_url, payload)
     return repo.serialize_assessment(assessment)
 
 

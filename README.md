@@ -155,6 +155,10 @@ curl -X POST http://localhost:8000/assess/async \
 curl http://localhost:8000/tasks/<task_id>
 ```
 
+### Webhook callbacks
+
+Set `ASSESSMENT_WEBHOOK_URL` to notify your core backend when an assessment finishes. The service will POST the assessment payload to that URL for both synchronous (`POST /assess`) and asynchronous (`POST /assess/async`) requests. The payload contains the identity, activity event, optional privilege change, the assessment summary, and the `task_id` for async jobs.
+
 ## Tests
 ```
 pytest
