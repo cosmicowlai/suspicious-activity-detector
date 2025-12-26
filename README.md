@@ -30,6 +30,60 @@ python examples/demo.py
 ```
 The demo bootstraps a benign baseline, applies a privilege escalation, and evaluates a high-risk export action. It prints the combined risk signals and the recommended action.
 
+## REST API service
+
+Expose the detector as a FastAPI service:
+
+```
+uvicorn suspicious_activity_detector.api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Key endpoints:
+- `GET /health` - basic readiness check.
+- `POST /assess` - submit an identity, activity event, and optional privilege change for scoring.
+- `GET /accounts/{user_id}/summary` - retrieve the current account state and behavioral summary.
+- `POST /accounts/{user_id}/freeze` - mark an account as frozen.
+- `POST /accounts/{user_id}/reset-sessions` - clear active sessions.
+
+Example assessment request:
+
+```bash
+curl -X POST http://localhost:8000/assess \
+  -H "Content-Type: application/json" \
+  -d '{
+    "identity": {
+      "user_id": "alice",
+      "device_id": "device-1",
+      "ip": "203.0.113.10",
+      "geo": "US",
+      "user_agent": "Mozilla/5.0",
+      "session_id": "sess-1",
+      "roles": ["user"],
+      "privileges": ["read"],
+      "timestamp": "2024-01-01T00:00:00Z"
+    },
+    "event": {
+      "timestamp": "2024-01-01T00:00:00Z",
+      "endpoint": "/admin/export",
+      "method": "POST",
+      "status_code": 200,
+      "latency_ms": 120,
+      "bytes_in": 256,
+      "bytes_out": 4096,
+      "service": "admin",
+      "trace_id": "trace-1",
+      "metadata": {"source": "api-doc"}
+    },
+    "privilege_change": {
+      "previous_roles": ["user"],
+      "new_roles": ["user", "admin"],
+      "previous_privileges": ["read"],
+      "new_privileges": ["read", "write"],
+      "timestamp": "2024-01-01T00:00:00Z"
+    }
+  }'
+```
+
 ## Library usage
 ```python
 from datetime import datetime
@@ -66,6 +120,21 @@ event = ActivityEvent(
 assessment = engine.assess_event(identity, event)
 print(assessment.total_score, assessment.action)
 print(engine.summary(identity.user_id))
+```
+
+## Containerization
+
+Build and run the API as a container:
+
+```
+docker build -t suspicious-activity-detector .
+docker run -p 8000:8000 suspicious-activity-detector
+```
+
+Or start it with Docker Compose:
+
+```
+docker-compose up --build
 ```
 
 ## Tests
