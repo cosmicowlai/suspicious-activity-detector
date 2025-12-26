@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
@@ -7,7 +8,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from .models import ActivityEvent, IdentityContext, PrivilegeChange, RiskAssessment, RiskSignal
+from .persistence import AssessmentRepository
 from .risk_engine import RiskEngine
+from .tasks import enqueue_assessment
 
 
 class IdentityPayload(BaseModel):
@@ -71,6 +74,17 @@ class SummaryResponse(BaseModel):
     recent_sequence: List[str]
 
 
+class TaskEnqueueResponse(BaseModel):
+    task_id: str
+    status: str
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: str
+    assessment: Optional[AssessmentResponse] = None
+
+
 def _to_identity(payload: IdentityPayload) -> IdentityContext:
     return IdentityContext(**payload.model_dump())
 
@@ -109,9 +123,28 @@ def _serialize_summary(user_id: str, summary: Dict[str, object]) -> SummaryRespo
     )
 
 
-def create_app(engine: RiskEngine | None = None) -> FastAPI:
+def _serialize_assessment_record(payload: Dict[str, Any]) -> AssessmentResponse:
+    return AssessmentResponse(
+        total_score=float(payload["total_score"]),
+        action=str(payload["action"]),
+        signals=[RiskSignalResponse(**signal) for signal in payload.get("signals", [])],
+        account_frozen=bool(payload.get("account_frozen")),
+        session_invalidated=bool(payload.get("session_invalidated")),
+    )
+
+
+def create_app(
+    engine: RiskEngine | None = None,
+    repository: AssessmentRepository | None = None,
+    mongodb_uri: str | None = None,
+    mongodb_database: str | None = None,
+) -> FastAPI:
     app = FastAPI(title="Suspicious Activity Detector API", version="1.0.0")
     app.state.engine = engine or RiskEngine()
+    app.state.repository = repository or AssessmentRepository(
+        uri=mongodb_uri or os.getenv("MONGODB_URI", "mongodb://mongo:27017/"),
+        database=mongodb_database or os.getenv("MONGODB_DATABASE", "suspicious_activity"),
+    )
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -124,6 +157,23 @@ def create_app(engine: RiskEngine | None = None) -> FastAPI:
         privilege_change = _to_privilege_change(request.privilege_change)
         assessment = app.state.engine.assess_event(identity, event, privilege_change)
         return _serialize_assessment(assessment)
+
+    @app.post("/assess/async", response_model=TaskEnqueueResponse, status_code=202)
+    def queue_assessment(request: AssessRequest) -> TaskEnqueueResponse:
+        identity = request.identity.model_dump(mode="json")
+        event = request.event.model_dump(mode="json")
+        privilege_change = request.privilege_change.model_dump(mode="json") if request.privilege_change else None
+        task_id = enqueue_assessment(identity=identity, event=event, privilege_change=privilege_change)
+        return TaskEnqueueResponse(task_id=task_id, status="queued")
+
+    @app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+    def task_status(task_id: str) -> TaskStatusResponse:
+        record = app.state.repository.get_assessment(task_id)
+        if record is None:
+            return TaskStatusResponse(task_id=task_id, status="pending", assessment=None)
+
+        assessment = _serialize_assessment_record(record["assessment"])
+        return TaskStatusResponse(task_id=task_id, status="completed", assessment=assessment)
 
     @app.get("/accounts/{user_id}/summary", response_model=SummaryResponse)
     def account_summary(user_id: str) -> SummaryResponse:
