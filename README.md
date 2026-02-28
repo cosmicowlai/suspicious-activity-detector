@@ -163,3 +163,9 @@ Set `ASSESSMENT_WEBHOOK_URL` to notify your core backend when an assessment fini
 ```
 pytest
 ```
+
+## Full functionality replication guide
+
+If you want to recreate this project in another codebase using Codex, use the prompt-ready guide at:
+
+- `docs/functionalities-replication-guide.md`
